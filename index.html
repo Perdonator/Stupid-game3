@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>FPS Shooter with Rolling, Blow Ball Enemies & Conditional Music</title>
+  <!-- Responsive design -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: Arial, sans-serif;
+    }
+    /* Container for the Three.js canvas */
+    #game-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+    }
+    /* Prevent dragging of the canvas element */
+    #game-container canvas {
+      -webkit-user-drag: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    /* UI overlay for score and health */
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      color: #fff;
+      font-size: 20px;
+      user-select: none;
+    }
+    /* Crosshair in the center */
+    #crosshair {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 20px;
+      height: 20px;
+      margin-left: -10px;
+      margin-top: -10px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #crosshair:before, #crosshair:after {
+      content: '';
+      position: absolute;
+      background: #fff;
+    }
+    #crosshair:before {
+      left: 9px;
+      top: 0;
+      width: 2px;
+      height: 20px;
+    }
+    #crosshair:after {
+      left: 0;
+      top: 9px;
+      width: 20px;
+      height: 2px;
+    }
+    /* Game Over overlay */
+    #gameOver {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.8);
+      padding: 20px;
+      border: 2px solid #fff;
+      text-align: center;
+      color: #fff;
+      font-size: 24px;
+      display: none;
+      z-index: 20;
+    }
+    #gameOver button {
+      font-size: 20px;
+      padding: 10px 20px;
+      margin-top: 10px;
+      cursor: pointer;
+    }
+    /* Mobile look controls (touch area on the right half) */
+    #look-controls {
+      display: none;
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 50%;
+      height: 100%;
+      z-index: 25;
+      touch-action: none;
+    }
+    /* Mobile joystick container for movement */
+    #joystick-container {
+      display: none;
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      width: 150px;
+      height: 150px;
+      z-index: 30;
+      touch-action: none;
+    }
+    /* Fire button for mobile */
+    #fire-button {
+      display: none;
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 70px;
+      height: 70px;
+      background: rgba(255,0,0,0.5);
+      border: 2px solid #fff;
+      border-radius: 50%;
+      font-size: 20px;
+      color: #fff;
+      z-index: 30;
+    }
+    /* Jumpscare video overlay */
+    #jumpscare-video {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 40;
+      display: none;
+      object-fit: cover;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container"></div>
+  <div id="ui">
+    <div id="score">Score: 0</div>
+    <div id="health">Health: 100</div>
+  </div>
+  <div id="crosshair"></div>
+  <div id="gameOver">
+    <h1>Game Over</h1>
+    <p id="finalScore"></p>
+    <button id="restart">Restart</button>
+  </div>
+  <!-- Mobile controls: joystick for movement, look area, and a fire button -->
+  <div id="joystick-container"></div>
+  <div id="look-controls"></div>
+  <button id="fire-button">Fire</button>
+  <!-- Jumpscare video element -->
+  <video id="jumpscare-video" src="jumpscare.mp4"></video>
+
+  <!-- Include Three.js, PointerLockControls, and NippleJS -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://threejs.org/examples/js/controls/PointerLockControls.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.8.6/nipplejs.min.js"></script>
+  <script>
+    let scene, camera, renderer;
+    let controls; // For desktop pointer lock
+    const container = document.getElementById('game-container');
+
+    // Detect mobile devices.
+    const isMobile = ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+
+    // Game state variables.
+    let enemies = [];
+    let projectiles = [];
+    let lastEnemySpawn = 0;
+    const enemySpawnInterval = 2000; // milliseconds
+    let score = 0;
+    let health = 100;
+    let gameOver = false;
+
+    // NEW: Flag to ensure background music starts only after the first enemy kill.
+    let backgroundMusicStarted = false;
+
+    // Desktop movement flags.
+    let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+    let velocity = new THREE.Vector3();
+
+    // Mobile variables: joystick vector for movement and look controls for view rotation.
+    let joystickVector = { x: 0, y: 0 };
+    let yaw = 0, pitch = 0;
+    let lookSensitivity = 0.005;
+
+    // For multi-touch look-controls.
+    let lookTouchId = null;
+    let lastLookTouchX = 0, lastLookTouchY = 0;
+
+    // UI elements.
+    const scoreElement = document.getElementById('score');
+    const healthElement = document.getElementById('health');
+    const gameOverElement = document.getElementById('gameOver');
+    const finalScoreElement = document.getElementById('finalScore');
+    const restartButton = document.getElementById('restart');
+    const fireButton = document.getElementById('fire-button');
+    const lookControls = document.getElementById('look-controls');
+    const joystickContainer = document.getElementById('joystick-container');
+    const jumpscareVideo = document.getElementById('jumpscare-video');
+
+    // Sound effect objects.
+    const shootSound = new Audio("shoot.mp3");
+    const killSound  = new Audio("kill.mp3");
+    const enemySound = new Audio("randomEnemiesounds.mp3");
+    const walkingSound = new Audio("walking.mp3");
+    walkingSound.loop = true;
+
+    // Custom background music.
+    const backgroundMusic = new Audio("customMusic.mp3");
+    backgroundMusic.loop = true;
+    backgroundMusic.volume = 0.9;
+
+    // New jump sound for rolling enemies.
+    const jumpSound = new Audio("jump.mp3");
+
+    // New fireball sound.
+    const fireballSound = new Audio("fireball.mp3");
+
+    // Global array to store random boxes (for collision & physics).
+    let randomBoxes = [];
+
+    // Add random boxes across the world.
+    function addRandomGeometry() {
+      for (let i = 0; i < 50; i++) {
+        const width = Math.random() * 5 + 1;
+        const height = Math.random() * 5 + 1;
+        const depth = Math.random() * 5 + 1;
+        const geometry = new THREE.BoxGeometry(width, height, depth);
+        const material = new THREE.MeshPhongMaterial({ color: Math.random() * 0xffffff });
+        const box = new THREE.Mesh(geometry, material);
+        box.position.set(
+          (Math.random() - 0.5) * 1000,
+          height / 2,
+          (Math.random() - 0.5) * 1000
+        );
+        box.userData.velocity = new THREE.Vector3();
+        scene.add(box);
+        randomBoxes.push(box);
+      }
+    }
+
+    // Spawn an enemy.
+    // r < 0.1 spawns the "blow ball" (purple, medium sized, shoots fireballs)
+    // 0.1 ≤ r < 0.3 spawns a rolling enemy (blue ball with jumping physics)
+    // Otherwise, a standard enemy is spawned.
+    function spawnEnemy() {
+      let enemy;
+      const r = Math.random();
+      if (r < 0.1) {
+        // Spawn "the blow ball"
+        const ballRadius = 0.8;
+        const geometry = new THREE.SphereGeometry(ballRadius, 16, 16);
+        const material = new THREE.MeshPhongMaterial({ color: 0x800080 }); // purple
+        enemy = new THREE.Mesh(geometry, material);
+        const distance = 20 + Math.random() * 10;
+        const angle = (Math.random() - 0.5) * Math.PI / 3;
+        enemy.position.set(
+          camera.position.x + Math.sin(angle) * distance,
+          ballRadius,
+          camera.position.z - Math.cos(angle) * distance
+        );
+        enemy.userData.health = 3;
+        enemy.userData.blowBall = true;
+        enemy.userData.lastFireTime = performance.now();
+      } else if (r < 0.3) {
+        // Spawn a rolling enemy.
+        const ballRadius = 0.7;
+        const geometry = new THREE.SphereGeometry(ballRadius, 16, 16);
+        const material = new THREE.MeshPhongMaterial({ color: 0x0000ff }); // blue
+        enemy = new THREE.Mesh(geometry, material);
+        const distance = 20 + Math.random() * 10;
+        const angle = (Math.random() - 0.5) * Math.PI / 3;
+        enemy.position.set(
+          camera.position.x + Math.sin(angle) * distance,
+          ballRadius,
+          camera.position.z - Math.cos(angle) * distance
+        );
+        enemy.userData.health = 3;
+        enemy.userData.rolling = true;
+        enemy.userData.velocity = new THREE.Vector3();
+        enemy.userData.verticalVelocity = 0;
+        enemy.userData.isJumping = false;
+        enemy.userData.groundLevel = ballRadius;
+      } else {
+        // Spawn a standard enemy.
+        const geometry = new THREE.SphereGeometry(0.5, 16, 16);
+        let material, healthVal, isGreen;
+        if (Math.random() < 0.1) {
+          material = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
+          healthVal = 10;
+          isGreen = true;
+        } else {
+          material = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+          healthVal = 1;
+          isGreen = false;
+        }
+        enemy = new THREE.Mesh(geometry, material);
+        const distance = 20 + Math.random() * 10;
+        const angle = (Math.random() - 0.5) * Math.PI / 3;
+        enemy.position.set(
+          camera.position.x + Math.sin(angle) * distance,
+          1,
+          camera.position.z - Math.cos(angle) * distance
+        );
+        enemy.userData.health = healthVal;
+        enemy.userData.green = isGreen;
+        enemy.userData.rolling = false;
+      }
+      scene.add(enemy);
+      enemies.push(enemy);
+      if (Math.random() < 0.3) {
+        enemySound.currentTime = 0;
+        enemySound.play();
+      }
+    }
+
+    // Function for blow ball enemies to shoot a fireball.
+    function enemyShootFireball(enemy) {
+      const fireballGeometry = new THREE.SphereGeometry(0.15, 8, 8);
+      const fireballMaterial = new THREE.MeshBasicMaterial({ color: 0x000000 }); // black
+      let fireball = new THREE.Mesh(fireballGeometry, fireballMaterial);
+      // Position fireball slightly offset from enemy center.
+      let offset = new THREE.Vector3(0, 0, 0.8);
+      offset.applyQuaternion(enemy.quaternion);
+      fireball.position.copy(enemy.position).add(offset);
+      // Compute direction from enemy to player.
+      let direction = new THREE.Vector3();
+      direction.subVectors(camera.position, enemy.position).normalize();
+      fireball.userData = {
+         velocity: direction.multiplyScalar(2),
+         bounceCount: 0,
+         trailPositions: [],
+         creationTime: performance.now(),
+         type: "fireball",
+         shooter: enemy
+      };
+      // Create an orange trail.
+      const maxTrailPoints = 10;
+      const trailGeometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(maxTrailPoints * 3);
+      trailGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const trailMaterial = new THREE.LineBasicMaterial({ color: 0xffa500 }); // orange
+      const trailLine = new THREE.Line(trailGeometry, trailMaterial);
+      fireball.userData.trailLine = trailLine;
+      scene.add(trailLine);
+      scene.add(fireball);
+      projectiles.push(fireball);
+      // Play fireball sound.
+      fireballSound.currentTime = 0;
+      fireballSound.play();
+    }
+
+    function init() {
+      // Set up scene, camera, and renderer.
+      scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x000000, 0, 50);
+
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      camera.position.set(0, 1.6, 0);
+      camera.rotation.order = "YXZ";
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      container.appendChild(renderer.domElement);
+
+      // Lighting.
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+      scene.add(ambientLight);
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(5, 10, 7.5);
+      scene.add(directionalLight);
+
+      const textureLoader = new THREE.TextureLoader();
+
+      // Ground.
+      const floorTexture = textureLoader.load('floor.png');
+      floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
+      floorTexture.repeat.set(50, 50);
+      const groundGeometry = new THREE.PlaneGeometry(1000, 1000);
+      const groundMaterial = new THREE.MeshPhongMaterial({ map: floorTexture });
+      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+      ground.rotation.x = -Math.PI / 2;
+      scene.add(ground);
+
+      // Sky.
+      const skyTexture = textureLoader.load('sky.png');
+      const skyGeometry = new THREE.SphereGeometry(500, 60, 40);
+      const skyMaterial = new THREE.MeshBasicMaterial({ map: skyTexture, side: THREE.BackSide });
+      skyMaterial.fog = false;
+      const skyMesh = new THREE.Mesh(skyGeometry, skyMaterial);
+      scene.add(skyMesh);
+
+      // Add random boxes.
+      addRandomGeometry();
+
+      // Setup controls.
+      if (!isMobile) {
+        controls = new THREE.PointerLockControls(camera, document.body);
+        scene.add(controls.getObject());
+        const blocker = document.createElement('div');
+        blocker.style.position = 'absolute';
+        blocker.style.top = '0';
+        blocker.style.left = '0';
+        blocker.style.width = '100%';
+        blocker.style.height = '100%';
+        blocker.style.backgroundColor = 'rgba(0,0,0,0.5)';
+        blocker.style.display = 'flex';
+        blocker.style.alignItems = 'center';
+        blocker.style.justifyContent = 'center';
+        blocker.style.color = '#fff';
+        blocker.style.fontSize = '30px';
+        blocker.style.zIndex = '30';
+        blocker.innerHTML = 'Click to Play';
+        document.body.appendChild(blocker);
+        blocker.addEventListener('click', function () {
+          controls.lock();
+        });
+        controls.addEventListener('lock', function () {
+          blocker.style.display = 'none';
+          // MUSIC: Removed automatic background music start.
+        });
+        controls.addEventListener('unlock', function () {
+          blocker.style.display = 'flex';
+          blocker.innerHTML = 'Click to Play';
+        });
+        document.addEventListener('keydown', onKeyDown, false);
+        document.addEventListener('keyup', onKeyUp, false);
+      } else {
+        joystickContainer.style.display = 'block';
+        fireButton.style.display = 'block';
+        lookControls.style.display = 'block';
+
+        let joystickManager = nipplejs.create({
+          zone: joystickContainer,
+          mode: 'static',
+          position: { left: '75px', bottom: '75px' },
+          color: 'white'
+        });
+        joystickManager.on('move', function (evt, data) {
+          if (data && data.vector) {
+            joystickVector.x = data.vector.x;
+            joystickVector.y = data.vector.y;
+          }
+        });
+        joystickManager.on('end', function () {
+          joystickVector.x = 0;
+          joystickVector.y = 0;
+        });
+
+        lookControls.addEventListener('touchstart', function (e) {
+          e.preventDefault();
+          if (lookTouchId === null && e.touches.length > 0) {
+            lookTouchId = e.touches[0].identifier;
+            lastLookTouchX = e.touches[0].clientX;
+            lastLookTouchY = e.touches[0].clientY;
+          }
+        });
+        lookControls.addEventListener('touchmove', function (e) {
+          e.preventDefault();
+          for (let i = 0; i < e.touches.length; i++) {
+            if (e.touches[i].identifier === lookTouchId) {
+              const touchX = e.touches[i].clientX;
+              const touchY = e.touches[i].clientY;
+              const deltaX = touchX - lastLookTouchX;
+              const deltaY = touchY - lastLookTouchY;
+              yaw -= deltaX * lookSensitivity;
+              pitch -= deltaY * lookSensitivity;
+              pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+              lastLookTouchX = touchX;
+              lastLookTouchY = touchY;
+              break;
+            }
+          }
+        });
+        lookControls.addEventListener('touchend', function (e) {
+          e.preventDefault();
+          for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === lookTouchId) {
+              lookTouchId = null;
+              break;
+            }
+          }
+        });
+        // MUSIC: Removed the mobile automatic trigger.
+      }
+
+      window.addEventListener('resize', onWindowResize, false);
+
+      // Fire projectiles on click (desktop) or touch (mobile).
+      document.addEventListener('click', function (e) {
+        if (!isMobile && controls && controls.isLocked) {
+          shootProjectile();
+        }
+      });
+      fireButton.addEventListener('touchstart', function (e) {
+        shootProjectile();
+        e.preventDefault();
+      });
+
+      animate();
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // Desktop keyboard handlers.
+    function onKeyDown(event) {
+      switch (event.code) {
+        case 'ArrowUp':
+        case 'KeyW':
+          moveForward = true;
+          break;
+        case 'ArrowLeft':
+        case 'KeyA':
+          moveLeft = true;
+          break;
+        case 'ArrowDown':
+        case 'KeyS':
+          moveBackward = true;
+          break;
+        case 'ArrowRight':
+        case 'KeyD':
+          moveRight = true;
+          break;
+      }
+    }
+    function onKeyUp(event) {
+      switch (event.code) {
+        case 'ArrowUp':
+        case 'KeyW':
+          moveForward = false;
+          break;
+        case 'ArrowLeft':
+        case 'KeyA':
+          moveLeft = false;
+          break;
+        case 'ArrowDown':
+        case 'KeyS':
+          moveBackward = false;
+          break;
+        case 'ArrowRight':
+        case 'KeyD':
+          moveRight = false;
+          break;
+      }
+    }
+
+    // --- SHOOTING: Create a projectile (player bullet) with a yellow trail.
+    function shootProjectile() {
+      const geometry = new THREE.SphereGeometry(0.1, 8, 8);
+      const material = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+      const projectile = new THREE.Mesh(geometry, material);
+      projectile.position.copy(camera.position);
+      let direction = new THREE.Vector3();
+      if (!isMobile) {
+        controls.getDirection(direction);
+      } else {
+        direction.set(
+          -Math.sin(yaw) * Math.cos(pitch),
+          Math.sin(pitch),
+          -Math.cos(yaw) * Math.cos(pitch)
+        );
+      }
+      projectile.userData = {
+        velocity: direction.multiplyScalar(1),
+        bounceCount: 0,
+        trailPositions: [],
+        trailLine: null,
+        creationTime: performance.now()
+      };
+      const maxTrailPoints = 10;
+      const trailGeometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(maxTrailPoints * 3);
+      trailGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const trailMaterial = new THREE.LineBasicMaterial({ color: 0xffff00 });
+      const trailLine = new THREE.Line(trailGeometry, trailMaterial);
+      projectile.userData.trailLine = trailLine;
+      scene.add(trailLine);
+      scene.add(projectile);
+      projectiles.push(projectile);
+      shootSound.currentTime = 0;
+      shootSound.play();
+    }
+
+    // --- PROJECTILES: Update bullet (and fireball) positions, apply drag, update trails,
+    // process collisions/ricochets, and remove after 15 seconds.
+    function updateProjectiles(delta) {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const proj = projectiles[i];
+        // Remove projectile if alive >15 sec.
+        if (performance.now() - proj.userData.creationTime > 15000) {
+          scene.remove(proj);
+          scene.remove(proj.userData.trailLine);
+          projectiles.splice(i, 1);
+          continue;
+        }
+        // For enemy fireballs, check collision with player.
+        if (proj.userData.type === "fireball") {
+          if (proj.position.distanceTo(camera.position) < 1) {
+            health -= 10;
+            scene.remove(proj);
+            scene.remove(proj.userData.trailLine);
+            projectiles.splice(i, 1);
+            continue;
+          }
+        }
+        proj.userData.velocity.multiplyScalar(0.99);
+        proj.position.add(proj.userData.velocity.clone().multiplyScalar(delta * 50));
+        const maxTrailPoints = 10;
+        let trailPositions = proj.userData.trailPositions;
+        trailPositions.push(proj.position.clone());
+        if (trailPositions.length > maxTrailPoints) { trailPositions.shift(); }
+        const positionsArray = proj.userData.trailLine.geometry.attributes.position.array;
+        for (let j = 0; j < trailPositions.length; j++) {
+          positionsArray[j * 3] = trailPositions[j].x;
+          positionsArray[j * 3 + 1] = trailPositions[j].y;
+          positionsArray[j * 3 + 2] = trailPositions[j].z;
+        }
+        for (let j = trailPositions.length; j < maxTrailPoints; j++) {
+          positionsArray[j * 3] = proj.position.x;
+          positionsArray[j * 3 + 1] = proj.position.y;
+          positionsArray[j * 3 + 2] = proj.position.z;
+        }
+        proj.userData.trailLine.geometry.attributes.position.needsUpdate = true;
+        if (proj.position.distanceTo(camera.position) > 100) {
+          scene.remove(proj);
+          scene.remove(proj.userData.trailLine);
+          projectiles.splice(i, 1);
+          continue;
+        }
+        if (proj.position.y < 0.1) {
+          const normal = new THREE.Vector3(0, 1, 0);
+          let v = proj.userData.velocity.clone();
+          const dot = v.dot(normal);
+          const reflected = v.sub(normal.multiplyScalar(2 * dot));
+          const bounceDamping = 0.7;
+          proj.userData.velocity.copy(reflected.multiplyScalar(bounceDamping));
+          proj.position.y = 0.1;
+          proj.userData.bounceCount++;
+        }
+        let projSphere = new THREE.Sphere(proj.position, 0.1);
+        for (let j = 0; j < randomBoxes.length; j++) {
+          let box = randomBoxes[j];
+          let boxBB = new THREE.Box3().setFromObject(box);
+          if (boxBB.intersectsSphere(projSphere)) {
+            const normal = proj.position.clone().sub(box.position).normalize();
+            let v = proj.userData.velocity.clone();
+            const dot = v.dot(normal);
+            const reflected = v.sub(normal.multiplyScalar(2 * dot));
+            const bounceDamping = 0.7;
+            proj.userData.velocity.copy(reflected.multiplyScalar(bounceDamping));
+            proj.position.add(normal.multiplyScalar(0.5));
+            proj.userData.bounceCount++;
+            box.userData.velocity.add(proj.userData.velocity.clone().multiplyScalar(0.5));
+            break;
+          }
+        }
+        if (proj.userData.bounceCount > 5) {
+          scene.remove(proj);
+          scene.remove(proj.userData.trailLine);
+          projectiles.splice(i, 1);
+          continue;
+        }
+      }
+    }
+
+    // --- ENEMIES: Update enemy positions.
+    // Blow ball enemies (purple) move toward the player and shoot fireballs every 3 sec.
+    // Rolling enemies (blue) use jumping physics.
+    // Standard enemies move directly toward the player.
+    function updateEnemies(delta) {
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const enemy = enemies[i];
+        if (enemy.userData.blowBall) {
+          let direction = new THREE.Vector3();
+          direction.subVectors(camera.position, enemy.position).normalize();
+          const enemySpeed = 3;
+          enemy.position.add(direction.multiplyScalar(delta * enemySpeed));
+          if (performance.now() - enemy.userData.lastFireTime > 3000) {
+            enemyShootFireball(enemy);
+            enemy.userData.lastFireTime = performance.now();
+          }
+          if (enemy.position.distanceTo(camera.position) < 1) {
+            health -= 10;
+            scene.remove(enemy);
+            enemies.splice(i, 1);
+            if (health <= 0) { endGame(); }
+          }
+        } else if (enemy.userData.rolling) {
+          let dir = new THREE.Vector3();
+          dir.subVectors(camera.position, enemy.position);
+          dir.y = 0;
+          if (dir.length() > 0.1) {
+            dir.normalize();
+            const acceleration = 5 * delta;
+            enemy.userData.velocity.add(dir.multiplyScalar(acceleration));
+            enemy.userData.velocity.multiplyScalar(0.98);
+            enemy.position.add(enemy.userData.velocity.clone().multiplyScalar(delta));
+          }
+          const g = 20;
+          if (!enemy.userData.isJumping && Math.random() < 0.2 * delta) {
+            enemy.userData.isJumping = true;
+            enemy.userData.verticalVelocity = 10;
+            enemy.userData.initialJumpVelocity = enemy.userData.verticalVelocity;
+            jumpSound.currentTime = 0;
+            jumpSound.play();
+          }
+          if (enemy.userData.isJumping) {
+            enemy.userData.verticalVelocity -= g * delta;
+            enemy.position.y += enemy.userData.verticalVelocity * delta;
+            let f = 1 - (Math.abs(enemy.userData.verticalVelocity) / enemy.userData.initialJumpVelocity);
+            f = Math.max(0, Math.min(1, f));
+            const scaleFactor = 1.0;
+            let newScale = 1 + scaleFactor * f;
+            enemy.scale.set(newScale, newScale, newScale);
+            if (enemy.position.y <= enemy.userData.groundLevel) {
+              enemy.position.y = enemy.userData.groundLevel;
+              enemy.userData.verticalVelocity = 0;
+              enemy.userData.isJumping = false;
+              enemy.scale.set(1, 1, 1);
+            }
+          } else {
+            enemy.position.y = enemy.userData.groundLevel;
+            enemy.scale.set(1, 1, 1);
+          }
+          if (enemy.position.distanceTo(camera.position) < 1) {
+            health -= 10;
+            scene.remove(enemy);
+            enemies.splice(i, 1);
+            if (health <= 0) { endGame(); }
+          }
+        } else {
+          const direction = new THREE.Vector3();
+          direction.subVectors(camera.position, enemy.position).normalize();
+          let enemySpeed = enemy.userData.green ? (isMobile ? 5 : 10) : 4;
+          enemy.position.add(direction.multiplyScalar(delta * enemySpeed));
+          if (enemy.position.distanceTo(camera.position) < 1) {
+            health -= 10;
+            scene.remove(enemy);
+            enemies.splice(i, 1);
+            if (health <= 0) { endGame(); }
+          }
+        }
+      }
+    }
+
+    // --- COLLISIONS: Check collisions between player bullets (non-fireball projectiles) and enemies.
+    function checkCollisions() {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const proj = projectiles[i];
+        // Skip enemy fireballs.
+        if (proj.userData.type === "fireball") continue;
+        for (let j = enemies.length - 1; j >= 0; j--) {
+          const enemy = enemies[j];
+          if (proj.position.distanceTo(enemy.position) < 0.5) {
+            scene.remove(proj);
+            scene.remove(proj.userData.trailLine);
+            projectiles.splice(i, 1);
+            if (enemy.userData.health > 1) {
+              enemy.userData.health--;
+            } else {
+              score++;
+              // MUSIC: Start background music on the first enemy kill.
+              if (!backgroundMusicStarted) {
+                backgroundMusic.play();
+                backgroundMusicStarted = true;
+              }
+              scene.remove(enemy);
+              enemies.splice(j, 1);
+              killSound.currentTime = 0;
+              killSound.play();
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Update physics for random boxes.
+    function updateRandomBoxesPhysics(delta) {
+      randomBoxes.forEach(function(box) {
+        box.position.add(box.userData.velocity.clone().multiplyScalar(delta));
+        box.userData.velocity.multiplyScalar(0.95);
+      });
+    }
+
+    // Update player controls and check collision with random boxes.
+    function updateControls(delta) {
+      const oldPosition = camera.position.clone();
+      let moving = false;
+      if (!isMobile) {
+        velocity.x -= velocity.x * 10.0 * delta;
+        velocity.z -= velocity.z * 10.0 * delta;
+        const speed = 10.0;
+        if (moveForward) { velocity.z -= speed * delta; moving = true; }
+        if (moveBackward) { velocity.z += speed * delta; moving = true; }
+        if (moveLeft) { velocity.x -= speed * delta; moving = true; }
+        if (moveRight) { velocity.x += speed * delta; moving = true; }
+        controls.moveRight(velocity.x * delta);
+        controls.moveForward(velocity.z * delta);
+      } else {
+        const speed = 5.0 * delta;
+        const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+        const right = new THREE.Vector3(-forward.z, 0, forward.x).normalize();
+        let moveX = joystickVector.x;
+        let moveY = joystickVector.y;
+        if (Math.abs(moveX) > 0.05 || Math.abs(moveY) > 0.05) { moving = true; }
+        camera.position.add(right.clone().multiplyScalar(moveX * speed));
+        camera.position.add(forward.clone().multiplyScalar(moveY * speed));
+        camera.rotation.order = "YXZ";
+        camera.rotation.set(pitch, yaw, 0);
+      }
+      let playerSphere = new THREE.Sphere(camera.position, 0.5);
+      for (let i = 0; i < randomBoxes.length; i++) {
+        let box = randomBoxes[i];
+        let boxBB = new THREE.Box3().setFromObject(box);
+        if (boxBB.intersectsSphere(playerSphere)) {
+          camera.position.copy(oldPosition);
+          break;
+        }
+      }
+      if (moving) {
+        if (walkingSound.paused) { walkingSound.play(); }
+      } else {
+        if (!walkingSound.paused) {
+          walkingSound.pause();
+          walkingSound.currentTime = 0;
+        }
+      }
+    }
+
+    let lastTime = performance.now();
+    function animate() {
+      if (gameOver) return;
+      requestAnimationFrame(animate);
+      const time = performance.now();
+      const delta = (time - lastTime) / 1000;
+      lastTime = time;
+      if (time - lastEnemySpawn > enemySpawnInterval) {
+        spawnEnemy();
+        lastEnemySpawn = time;
+      }
+      updateProjectiles(delta);
+      updateEnemies(delta);
+      checkCollisions();
+      updateControls(delta);
+      updateRandomBoxesPhysics(delta);
+      scoreElement.textContent = 'Score: ' + score;
+      healthElement.textContent = 'Health: ' + health;
+      renderer.render(scene, camera);
+    }
+
+    function endGame() {
+      gameOver = true;
+      walkingSound.pause();
+      walkingSound.currentTime = 0;
+      jumpscareVideo.style.display = 'block';
+      jumpscareVideo.currentTime = 0;
+      jumpscareVideo.play();
+      jumpscareVideo.onended = function() {
+        jumpscareVideo.style.display = 'none';
+        finalScoreElement.textContent = 'Your score: ' + score;
+        gameOverElement.style.display = 'block';
+      }
+    }
+
+    restartButton.addEventListener('click', function () {
+      score = 0;
+      health = 100;
+      gameOver = false;
+      enemies.forEach(e => scene.remove(e));
+      projectiles.forEach(p => {
+        scene.remove(p);
+        scene.remove(p.userData.trailLine);
+      });
+      enemies = [];
+      projectiles = [];
+      camera.position.set(0, 1.6, 0);
+      if (!isMobile && controls) { controls.getObject().position.set(0, 1.6, 0); }
+      gameOverElement.style.display = 'none';
+      lastTime = performance.now();
+      animate();
+    });
+
+    init();
+  </script>
+</body>
+</html>
